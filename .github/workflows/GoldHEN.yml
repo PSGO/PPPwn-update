@@ -1,0 +1,107 @@
+name: Fetch and Download GoldHEN Releases
+
+on:
+  schedule:
+    - cron: "0 */1 * * *" # 每 6 小时运行一次
+  workflow_dispatch: # 手动触发
+
+jobs:
+  fetch-download:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 检出仓库代码
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # 清理旧文件和压缩包
+      - name: Clean up old files
+        run: |
+          rm -rf GoldHEN_stage2_all GoldHEN_stage2_all.zip
+          echo "Old files and folders have been deleted."
+      
+      # 获取最新版本并判断是否需要下载
+      - name: Check for new release
+        run: |
+          # 创建 log 目录（如果不存在）
+          mkdir -p log
+
+          # 定义存储最新版本的文件路径
+          LATEST_VERSION_FILE="log/latest_version.txt"
+
+          # 获取最新发布版本的信息
+          RESPONSE=$(curl -s -H "Accept: application/vnd.github.v3+json" https://api.github.com/repos/GoldHEN/GoldHEN/releases)
+          echo "API Response: $RESPONSE"
+
+          # 提取最新版本的 tag_name
+          LATEST_VERSION=$(echo "$RESPONSE" | jq -r '.[0].tag_name')
+          echo "Latest version: $LATEST_VERSION"
+
+          # 检查是否已存在最新版本的记录
+          if [[ -f "$LATEST_VERSION_FILE" ]]; then
+            STORED_VERSION=$(cat "$LATEST_VERSION_FILE")
+            echo "Stored version: $STORED_VERSION"
+
+            if [[ "$LATEST_VERSION" == "$STORED_VERSION" ]]; then
+              echo "No new version detected. Skipping download."
+              exit 1
+            fi
+          fi
+
+          # 存储最新版本号
+          echo "$LATEST_VERSION" > "$LATEST_VERSION_FILE"
+          echo "New version detected. Proceeding with download."
+      
+      # 创建主目录并下载发布文件
+      - name: Fetch release assets and download
+        run: |
+          # 创建主目录
+          mkdir -p GoldHEN_stage2_all
+
+          # 当前时间的日期目录
+          DATE_DIR=$(date +'%Y-%m-%d_%H-%M-%S')
+          mkdir -p "GoldHEN_stage2_all/$DATE_DIR"
+
+          # 获取发布版本文件链接
+          RESPONSE=$(curl -s -H "Accept: application/vnd.github.v3+json" https://api.github.com/repos/GoldHEN/GoldHEN/releases)
+          echo "API Response: $RESPONSE"
+
+          # 提取所有文件的下载链接
+          ASSETS=$(echo "$RESPONSE" | jq -r '.[] | .assets[]?.browser_download_url')
+          if [[ -z "$ASSETS" ]]; then
+            echo "No assets found. Exiting."
+            exit 1
+          fi
+
+          # 下载所有文件到日期目录中
+          for URL in $ASSETS; do
+            echo "Downloading $URL..."
+            FILENAME=$(basename "$URL")
+            curl -L -o "GoldHEN_stage2_all/$DATE_DIR/$FILENAME" "$URL"
+            
+            # 在文件名后追加 "_psgo.eu.org"
+            EXTENSION="${FILENAME##*.}"  # 获取扩展名
+            BASENAME="${FILENAME%.*}"   # 获取文件名（不包括扩展名）
+            mv "GoldHEN_stage2_all/$DATE_DIR/$FILENAME" "GoldHEN_stage2_all/$DATE_DIR/${BASENAME}_psgo.eu.org.${EXTENSION}"
+          done
+
+      # 压缩 GoldHEN_stage2_all 文件夹
+      - name: Compress GoldHEN_stage2_all folder
+        run: |
+          if [ -d "GoldHEN_stage2_all" ] && [ "$(ls -A GoldHEN_stage2_all)" ]; then
+            zip -r GoldHEN_stage2_all.zip GoldHEN_stage2_all
+          else
+            echo "No files to compress in GoldHEN_stage2_all. Exiting."
+            exit 1
+          fi
+
+      # 提交并推送文件到 main 分支
+      - name: Commit and push changes
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add log/latest_version.txt GoldHEN_stage2_all GoldHEN_stage2_all.zip
+          git commit -m "Update GoldHEN_stage2_all on $(date +'%Y-%m-%d %H:%M:%S')"
+          git push origin main
